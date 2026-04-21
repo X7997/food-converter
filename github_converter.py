@@ -16,6 +16,7 @@
 
 import os
 import sys
+import random
 import shutil
 import subprocess
 import time
@@ -24,13 +25,13 @@ from pathlib import Path
 
 # ========================== 首次配置（只需改这里） ==========================
 # GitHub 仓库地址（例如 https://github.com/你的用户名/k230-converter.git）
-GITHUB_REPO_URL = ""
+GITHUB_REPO_URL = "https://github.com/X7997/k230-converter.git"
 
 # 训练好的模型路径（直接把绝对地址粘贴过来）
-SOURCE_PT = r"Q:\K230_ultralytics\ultralytics_main\database\runs\detect\results\yolov8n3\weights\best.pt"
+SOURCE_PT = r"Q:\K230_ultralytics\ultralytics_main\Fridgify.v1-fridge_annotated_5132.yolov12\runs\detect\results\fridge_yolo12n\weights\best.pt"
 
 # 校准图目录（用于 PTQ 量化）
-SOURCE_CALIB = r"Q:\K230_ultralytics\ultralytics_main\database\test\images"
+SOURCE_CALIB = r"Q:\K230_ultralytics\ultralytics_main\Fridgify.v1-fridge_annotated_5132.yolov12\valid\images"
 
 # 每次推送多少张校准图到云端（太多会慢，建议 20~50）
 MAX_CALIB_UPLOAD = 30
@@ -76,7 +77,6 @@ def init_git():
         run_cmd("git init")
         print("✅ 已初始化本地 git 仓库")
 
-    # 检查是否已关联远程
     res = run_cmd("git remote get-url origin", check=False)
     if res.returncode != 0:
         if not GITHUB_REPO_URL:
@@ -101,9 +101,9 @@ def prepare_files():
         sys.exit(1)
     dest_pt = MODELS_DIR / "input.pt"
     shutil.copy2(SOURCE_PT, dest_pt)
-    print(f"✅ 已复制模型 -> {dest_pt}")
+    print(f"✅ 已复制模型 -> {dest_pt}  ({dest_pt.stat().st_size / 1024 / 1024:.1f} MB)")
 
-    # 复制校准图（随机选 N 张，避免推送过多）
+    # 复制校准图
     if not os.path.isdir(SOURCE_CALIB):
         print(f"❌ 找不到校准图目录: {SOURCE_CALIB}")
         sys.exit(1)
@@ -117,8 +117,12 @@ def prepare_files():
     for old in CALIB_DIR.iterdir():
         old.unlink()
 
-    selected = images if len(images) <= MAX_CALIB_UPLOAD else \
-        [images[i] for i in sorted(random.sample(range(len(images)), MAX_CALIB_UPLOAD))]
+    if len(images) <= MAX_CALIB_UPLOAD:
+        selected = images
+    else:
+        random.seed(42)
+        selected = random.sample(images, MAX_CALIB_UPLOAD)
+
     for img in selected:
         shutil.copy2(img, CALIB_DIR / img.name)
 
@@ -127,10 +131,15 @@ def prepare_files():
 
 def push_to_github():
     """提交并强制推送到 convert-request 分支"""
-    # 确保 worktree 干净（把 workflow 和转换脚本也一并追踪）
     run_cmd("git checkout -B convert-request")
-    run_cmd("git add models/ calib/ .github/ convert_k230.py")
-    run_cmd('git commit -m "Request K230 conversion" --allow-empty')
+    # 用 -f 强制添加被 .gitignore 拦截的文件（.pt / .jpg 等）
+    run_cmd("git add -f models/ calib/")
+    run_cmd("git add .github/ convert_k230.py github_converter.py .gitignore")
+    # 显示将要提交的文件，帮助调试
+    run_cmd("git status", check=False)
+    res = run_cmd('git commit -m "Request K230 conversion"', check=False)
+    if res.returncode != 0:
+        print("⚠️ 没有新的变更需要提交，仍将推送以触发 Actions")
     run_cmd("git push -u origin convert-request --force")
     print("✅ 已推送到 GitHub（convert-request 分支）")
 
@@ -140,9 +149,8 @@ def wait_and_download():
     print("\n⏳ 等待 GitHub Actions 启动（最多 30 秒）...")
     time.sleep(8)
 
-    # 获取最新 run id
     res = run_cmd('gh run list --branch convert-request --limit 1 --json databaseId,status,conclusion,name', check=False)
-    if res.returncode != 0:
+    if res.returncode != 0 or not res.stdout.strip():
         print("⚠️ 无法获取 Actions 运行列表，请手动去仓库 Actions 页面查看")
         return False
 
@@ -158,11 +166,17 @@ def wait_and_download():
 
     run_id = runs[0]["databaseId"]
     print(f"🔍 检测到运行 ID: {run_id} ({runs[0].get('name', '')})")
-    print("⏳ 开始自动等待转换完成（按 Ctrl+C 可中断，之后可手动去 Actions 页面下载）...\n")
+    print("⏳ 开始自动等待转换完成（按 Ctrl+C 可中断）...\n")
 
     watch_res = run_cmd(f"gh run watch {run_id} --exit-status", check=False, capture=False)
     if watch_res.returncode != 0:
         print("\n❌ GitHub Actions 运行失败或中断")
+        # 尝试打印失败日志帮助调试
+        log_res = run_cmd(f"gh run view {run_id} --log-failed", check=False)
+        if log_res.returncode == 0 and log_res.stdout:
+            print("--- 失败日志（最后 3000 字符）---")
+            print(log_res.stdout[-3000:] if len(log_res.stdout) > 3000 else log_res.stdout)
+            print("--- 日志结束 ---")
         return False
 
     print("\n✅ Actions 运行成功！开始下载结果...")
@@ -176,7 +190,7 @@ def wait_and_download():
 
     dl_res = run_cmd(f'gh run download {run_id} --name k230-model --dir "{OUTPUT_DIR}"', check=False)
     if dl_res.returncode != 0:
-        print("❌ 下载 artifact 失败，尝试下载全部 artifact...")
+        print("⚠️ 下载指定 artifact 失败，尝试下载全部 artifact...")
         dl_res = run_cmd(f'gh run download {run_id} --dir "{OUTPUT_DIR}"', check=False)
         if dl_res.returncode != 0:
             return False
@@ -188,20 +202,17 @@ def wait_and_download():
         for k in kmodels:
             size_kb = k.stat().st_size / 1024
             print(f"   📦 {k}  ({size_kb:.1f} KB)")
-        # 额外复制一份到根目录方便使用
         for k in kmodels:
             final = REPO_ROOT / k.name
             shutil.copy2(k, final)
             print(f"   📋 已复制到根目录: {final}")
     else:
         print("⚠️ 未在下载结果中找到 .kmodel 文件")
+        print(f"   请检查 {OUTPUT_DIR} 目录下的内容")
     return True
 
 
 def main():
-    import random  # 推迟导入，因为 prepare_files 里用到 random
-    globals()["random"] = random
-
     print("=" * 60)
     print(" GitHub Actions K230 模型转换调度器")
     print("=" * 60)
@@ -213,9 +224,11 @@ def main():
     success = wait_and_download()
 
     if not success:
-        url = GITHUB_REPO_URL.rstrip(".git") + "/actions"
+        url = GITHUB_REPO_URL.rstrip(".git") + "/actions" if GITHUB_REPO_URL else ""
         print(f"\n💡 请手动打开 GitHub Actions 页面查看或下载结果:")
-        print(f"   {url}")
+        if url:
+            print(f"   {url}")
+        print("   也可以运行: gh run list --branch convert-request")
 
     print("\n" + "=" * 60)
     print(" 流程结束")
