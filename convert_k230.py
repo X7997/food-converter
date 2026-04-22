@@ -27,47 +27,59 @@ def _env_list(key: str, default: list) -> list:
     return [int(x.strip()) for x in val.split(",")]
 
 
-# ========================== 用户配置区（全局变量） ==========================
-# 所有配置均支持通过同名环境变量覆盖，方便 GitHub Actions 调用。
-# 例: export K230_MODEL_PATH=models/input.pt
-MODEL_PATH = _env_str("K230_MODEL_PATH", r"Q:\K230_ultralytics\ultralytics_main\database\runs\detect\results\yolov8n3\weights\best.pt")
-KMODEL_PATH = _env_str("K230_KMODEL_PATH", "")
-CALIB_IMAGE_DIR = _env_str("K230_CALIB_DIR", r"Q:\K230_ultralytics\ultralytics_main\database\test\images")
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║                    ★★★ 用户配置区 ★★★                              ║
+# ║  修改这里即可，所有参数均可通过同名环境变量覆盖。                      ║
+# ║  GitHub Actions 会通过 yml 里设置的环境变量覆盖这些默认值。            ║
+# ╚══════════════════════════════════════════════════════════════════════╝
 
-INPUT_SHAPE = _env_list("K230_INPUT_SHAPE", [1, 3, 320, 320])
+# ── 模型路径 ──────────────────────────────────────────────────────────
+# 本地运行时填 .pt 或 .onnx 的绝对路径；GitHub Actions 时由环境变量覆盖
+MODEL_PATH = _env_str("K230_MODEL_PATH", "")
+# 输出 kmodel 文件名。为空则自动与原模型同名、仅改后缀
+KMODEL_PATH = _env_str("K230_KMODEL_PATH", "")
+
+# ── 校准数据 ─────────────────────────────────────────────────────────
+# 校准图目录。GitHub Actions 时由环境变量覆盖
+CALIB_IMAGE_DIR = _env_str("K230_CALIB_DIR", "")
+# 最多用多少张图做校准（太多吃内存）
 MAX_CALIB_IMAGES = _env_int("K230_MAX_CALIB_IMAGES", 50)
 
-# ONNX 导出参数（仅当 MODEL_PATH 是 .pt 时生效）
-ONNX_IMGSZ = _env_int("K230_ONNX_IMGSZ", 320)
-ONNX_BATCH = _env_int("K230_ONNX_BATCH", 1)
+# ── 模型输入尺寸 ★ 常改项 ────────────────────────────────────────────
+#        [N, C, H, W]  K230 推荐 320，K210 必须 224，改这里全局生效
+#        ⚠️ ONNX_IMGSZ 必须和这里的 H/W 一致！
+INPUT_SHAPE = _env_list("K230_INPUT_SHAPE", [1, 3, 320, 320])
+
+# ── ONNX 导出参数（仅当输入是 .pt 模型时生效） ───────────────────────
+#        ⚠️ imgsz 必须和 INPUT_SHAPE 的 H/W 保持一致！
+ONNX_IMGSZ = _env_int("K230_ONNX_IMGSZ", 320)       # ← 改尺寸时这里也要改
+ONNX_BATCH = _env_int("K230_ONNX_BATCH", 1)          # K230 必须为 1
 ONNX_DYNAMIC = os.environ.get("K230_ONNX_DYNAMIC", "false").lower() == "true"
 ONNX_SIMPLIFY = os.environ.get("K230_ONNX_SIMPLIFY", "true").lower() == "true"
-ONNX_NMS = os.environ.get("K230_ONNX_NMS", "false").lower() == "true"
-ONNX_OPSET = _env_int("K230_ONNX_OPSET", 11)
+ONNX_NMS = os.environ.get("K230_ONNX_NMS", "false").lower() == "true"  # 板端后处理，建议 False
+ONNX_OPSET = _env_int("K230_ONNX_OPSET", 11)         # K230 最稳定是 11
 ONNX_HALF = os.environ.get("K230_ONNX_HALF", "false").lower() == "true"
 ONNX_VERBOSE = os.environ.get("K230_ONNX_VERBOSE", "true").lower() == "true"
 
-# 量化校准参数
-QUANT_TYPE = _env_str("K230_QUANT_TYPE", "uint8")
-W_QUANT_TYPE = _env_str("K230_W_QUANT_TYPE", "uint8")
-CALIB_METHOD = _env_str("K230_CALIB_METHOD", "Kld")
+# ── 量化参数 ─────────────────────────────────────────────────────────
+QUANT_TYPE = _env_str("K230_QUANT_TYPE", "uint8")     # 激活量化: uint8 / int8
+W_QUANT_TYPE = _env_str("K230_W_QUANT_TYPE", "uint8") # 权重量化: uint8 / int8
+CALIB_METHOD = _env_str("K230_CALIB_METHOD", "Kld")   # 校准方法: Kld / NoClip
 
-# 编译选项
-TARGET = _env_str("K230_TARGET", "k230")
+# ── 编译选项 ─────────────────────────────────────────────────────────
+TARGET = _env_str("K230_TARGET", "k230")               # 目标芯片: k230 / k210
 DUMP_DIR = _env_str("K230_DUMP_DIR", "tmp")
 DUMP_IR = os.environ.get("K230_DUMP_IR", "false").lower() == "true"
 DUMP_ASM = os.environ.get("K230_DUMP_ASM", "false").lower() == "true"
-# ==========================================================================
+# ══════════════════════════════════════════════════════════════════════
 
 
 def log(step: str, msg: str):
-    """带时间戳的统一日志输出"""
     timestamp = time.strftime("%H:%M:%S")
     print(f"[{timestamp}] [{step}] {msg}")
 
 
 def setup_env():
-    """自动修复 nncase 插件路径，消除本地环境变量未设置的警告"""
     try:
         import nncase_kpu
         plugin_path = os.path.dirname(nncase_kpu.__file__)
@@ -78,10 +90,6 @@ def setup_env():
 
 
 def export_onnx(pt_path: str, imgsz: int = 320) -> str:
-    """
-    使用 ultralytics 将 .pt 导出为 ONNX。
-    返回生成的 .onnx 绝对路径。
-    """
     try:
         from ultralytics import YOLO
     except ImportError as e:
@@ -96,7 +104,7 @@ def export_onnx(pt_path: str, imgsz: int = 320) -> str:
     log("导出", f"正在加载 YOLO 模型: {pt_path}")
     model = YOLO(pt_path)
 
-    log("导出", "开始导出 ONNX（参数见脚本顶部 ONNX_xxx 配置）...")
+    log("导出", f"开始导出 ONNX (imgsz={imgsz}, opset={ONNX_OPSET}, simplify={ONNX_SIMPLIFY})...")
     success = model.export(
         format="onnx",
         imgsz=imgsz,
@@ -123,13 +131,8 @@ def export_onnx(pt_path: str, imgsz: int = 320) -> str:
 
 
 def resolve_model_path(model_path: str) -> str:
-    """
-    解析最终的 ONNX 路径：
-      - 如果是 .onnx 且存在，直接返回
-      - 如果是 .pt 且存在，自动调用 export_onnx 导出后返回 onnx 路径
-    """
     if not model_path:
-        log("错误", "MODEL_PATH 为空，请在脚本顶部填写模型路径")
+        log("错误", "MODEL_PATH 为空，请在脚本顶部或环境变量 K230_MODEL_PATH 中指定")
         sys.exit(1)
 
     model_path = os.path.abspath(model_path)
@@ -154,7 +157,6 @@ def resolve_model_path(model_path: str) -> str:
 
 
 def resolve_calib_dir(model_path: str, configured_dir: str) -> str:
-    """解析校准图目录：优先使用配置，否则尝试模型同级目录下的 images 文件夹"""
     if configured_dir and os.path.isdir(configured_dir):
         return configured_dir
 
@@ -167,10 +169,6 @@ def resolve_calib_dir(model_path: str, configured_dir: str) -> str:
 
 
 def read_calibration_images(img_dir: str, shape: list, max_num: int):
-    """
-    读取校准图片并进行预处理。
-    返回 list[np.ndarray]，每个元素形状均为 [1, C, H, W]，方便直接喂给 set_tensor_data。
-    """
     import cv2
     import numpy as np
 
@@ -200,7 +198,7 @@ def read_calibration_images(img_dir: str, shape: list, max_num: int):
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = img.astype(np.float32) / 255.0
         img = np.transpose(img, (2, 0, 1))
-        img = np.expand_dims(img, axis=0)          # [1, 3, H, W]
+        img = np.expand_dims(img, axis=0)
         data_list.append(img)
 
         if i % 10 == 0 or i == use_count:
@@ -217,6 +215,16 @@ def main():
     log("启动", "=" * 60)
     log("启动", "YOLO (.pt/.onnx) -> K230 Kmodel 转换脚本启动")
     log("启动", "=" * 60)
+
+    # 打印关键配置摘要
+    log("配置", f"  输入尺寸:   {INPUT_SHAPE}  (ONNX_IMGSZ={ONNX_IMGSZ})")
+    log("配置", f"  目标平台:   {TARGET}")
+    log("配置", f"  量化配置:   {QUANT_TYPE} / {W_QUANT_TYPE}  方法={CALIB_METHOD}")
+    log("配置", f"  ONNX导出:   opset={ONNX_OPSET} simplify={ONNX_SIMPLIFY} nms={ONNX_NMS}")
+    if KMODEL_PATH:
+        log("配置", f"  输出文件:   {KMODEL_PATH}")
+    else:
+        log("配置", f"  输出文件:   (自动，与原模型同名 .kmodel)")
 
     setup_env()
 
@@ -293,9 +301,9 @@ def main():
     log("完成", "=" * 60)
     log("完成", f"✅ 转换成功！Kmodel 已保存: {kmodel_file}")
     log("完成", f"   原始模型: {MODEL_PATH}")
-    log("完成", f"   输入尺寸: {INPUT_SHAPE}")
+    log("完成", f"   输入尺寸: {INPUT_SHAPE}  (ONNX_IMGSZ={ONNX_IMGSZ})")
     log("完成", f"   目标平台: {TARGET}")
-    log("完成", f"   量化配置: {QUANT_TYPE} (weight: {W_QUANT_TYPE})")
+    log("完成", f"   量化配置: {QUANT_TYPE} (weight: {W_QUANT_TYPE}), method={CALIB_METHOD}")
     log("完成", "=" * 60)
 
 
