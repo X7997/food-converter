@@ -32,8 +32,9 @@ jobs:
           pip install nncase==2.8.3 nncase-kpu==2.8.3
 
       - name: Run conversion
-        env:          K230_MODEL_PATH: models/input.pt
-          K230_KMODEL_PATH: results/food.kmodel
+        env:
+          K230_MODEL_PATH: models/input.pt
+          K230_KMODEL_PATH: results/output.kmodel
           K230_CALIB_DIR: calib/
           K230_INPUT_SHAPE: "1,3,320,320"
           K230_ONNX_IMGSZ: "320"
