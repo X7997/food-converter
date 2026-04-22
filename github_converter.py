@@ -42,6 +42,24 @@ MODELS_DIR = REPO_ROOT / "models"
 CALIB_DIR = REPO_ROOT / "calib"
 OUTPUT_DIR = REPO_ROOT / "output"
 
+# 本地代理端口（v2rayN 默认 10808，Clash 默认 7890）。填 0 或留空则不启用。
+PROXY_PORT = 10808
+
+
+def setup_proxy():
+    """自动检测并为 git 和环境变量设置代理，解决 GitHub 连接问题。"""
+    if not PROXY_PORT:
+        return
+    proxy_url = f"http://127.0.0.1:{PROXY_PORT}"
+    # 设置环境变量，让 gh run download 等子命令也走代理
+    os.environ["HTTP_PROXY"] = proxy_url
+    os.environ["HTTPS_PROXY"] = proxy_url
+    os.environ["ALL_PROXY"] = proxy_url
+    # 为 git 配置代理
+    run_cmd(f'git config --global http.proxy "{proxy_url}"', check=False)
+    run_cmd(f'git config --global https.proxy "{proxy_url}"', check=False)
+    print(f"✅ 代理已设置: {proxy_url}")
+
 
 def run_cmd(cmd: str, check: bool = True, capture: bool = True):
     """执行 shell 命令并打印输出"""
@@ -217,6 +235,7 @@ def main():
     print(" GitHub Actions K230 模型转换调度器")
     print("=" * 60)
 
+    setup_proxy()
     check_gh_login()
     init_git()
     prepare_files()
