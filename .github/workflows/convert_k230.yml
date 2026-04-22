@@ -44,7 +44,7 @@ jobs:
           K230_QUANT_TYPE: "uint8"
           K230_W_QUANT_TYPE: "uint8"
           K230_CALIB_METHOD: "Kld"
-          K230_MAX_CALIB_IMAGES: "50"
+          K230_MAX_CALIB_IMAGES: "770"
           K230_TARGET: "k230"
         run: |
           mkdir -p results
