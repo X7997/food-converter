@@ -46,7 +46,7 @@ jobs:
           K230_CALIB_METHOD: "Kld"
           K230_MAX_CALIB_IMAGES: "109"
           K230_TARGET: "k230"
-          K230_INPUT_TYPE: "uint8"
+          K230_INPUT_TYPE: "float32"
           K230_OUTPUT_TYPE: "float16"
         run: |
           mkdir -p results

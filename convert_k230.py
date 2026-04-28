@@ -57,6 +57,59 @@ def log(step, msg):
     print(f"[{ts}] [{step}] {msg}")
 
 
+def patch_onnx_input_normalize(onnx_path):
+    """
+    修复 K230 uint8 输入问题：在 ONNX 图开头显式添加 /255.0 归一化。
+    
+    问题：YOLO 模型训练时已归一化到 [0,1]，ONNX 期望 float32 [0,1] 输入。
+         nncase 的 input_type=uint8 算子折叠不可靠。
+    解决：在 ONNX 图中插入 Div(255.0)，使模型接受 float32 [0,255] 输入。
+         kmodel 转换时使用 input_type=float32，避免 nncase 添加额外 dequantize。
+    """
+    import onnx
+    from onnx import helper
+
+    model = onnx.load(onnx_path)
+    graph = model.graph
+    
+    old_input_name = graph.input[0].name
+    new_input_name = old_input_name + "_norm"
+    
+    # 插入 Constant(255.0) 节点
+    const_node = helper.make_node(
+        "Constant",
+        inputs=[],
+        outputs=["div_const_255"],
+        value=helper.make_tensor(
+            name="const_255_val",
+            data_type=onnx.TensorProto.FLOAT,
+            dims=[1],
+            vals=[255.0],
+        ),
+    )
+    
+    # 插入 Div 节点: normalized = input / 255.0
+    div_node = helper.make_node(
+        "Div",
+        inputs=[old_input_name, "div_const_255"],
+        outputs=[new_input_name],
+    )
+    
+    # 插入到图开头
+    graph.node.insert(0, const_node)
+    graph.node.insert(1, div_node)
+    
+    # 将后续节点中引用原输入名的地方替换为新名称
+    for node in graph.node[2:]:
+        for i in range(len(node.input)):
+            if node.input[i] == old_input_name:
+                node.input[i] = new_input_name
+    
+    onnx.save(model, onnx_path)
+    log("补丁", f"✅ ONNX 归一化补丁完成: {old_input_name} -> Div(255) -> {new_input_name}")
+    return onnx_path
+
+
 def setup_env():
     try:
         import nncase_kpu
@@ -98,18 +151,19 @@ def read_calibration_images(img_dir, shape, max_num):
     # ════════════════════════════════════════════════════════════════════════════
     # 预处理参数（K230 部署时必须对齐！）
     # ─────────────────────────────────────────────────────────────────────────────
-    # 1. 输入范围：保持 0~255（uint8），nncase 会自动将 /255.0 折叠进模型
+    # 1. 输入范围：保持 0~255（float32），ONNX 中显式 /255.0 归一化
     # 2. 颜色格式：RGB（cv2.cvtColor BGR→RGB）
     # 3. Layout：NCHW（通道在前）
     # 4. 均值/方差：无（YOLO 默认不使用 mean/std 归一化）
     # 5. 输入尺寸：由 INPUT_SHAPE 指定，当前为 [1, 3, 320, 320]
     # 
     # K230 部署代码必须执行相同的预处理：
-    #    - ai2d resize 后，直接输出 uint8（不做归一化）
+    #    - ai2d resize 后，输出 float32 [0,255]（不要做归一化）
+    #    - ONNX 模型内部已有 /255.0 → kmodel 内部自动处理归一化
     #    - 确保输入是 RGB 格式（不是 BGR）
     #    - 模型输出为 float16，后处理使用 float 计算
     # ════════════════════════════════════════════════════════════════════════════
-    log("校准", "预处理: RGB格式, NCHW布局, 范围[0,255], 输出float16")
+    log("校准", "预处理: RGB格式, NCHW布局, float32范围[0,255], 输出float16")
 
     data_list = []
     _, C, H, W = shape
@@ -154,6 +208,9 @@ def main():
     if not os.path.isfile(onnx_file):
         log("错误", f"ONNX 文件不存在: {onnx_file}")
         sys.exit(1)
+    
+    # ★ 修复 K230 uint8 问题：显式添加 /255.0 归一化到 ONNX 图中
+    onnx_file = patch_onnx_input_normalize(onnx_file)
 
     with open(onnx_file, "rb") as f:
         model_content = f.read()
